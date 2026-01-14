@@ -1,0 +1,7 @@
+{
+  "name": "EasyNihongo AI Tutor",
+  "description": "A Japanese language learning voice tutor for Uzbek students. Practice speaking Japanese (N5/N4 level) with real-time AI feedback and gentle corrections in Uzbek.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
