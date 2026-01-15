@@ -19,6 +19,7 @@ const App: React.FC = () => {
 
   const inputAudioContextRef = useRef<AudioContext | null>(null);
   const outputAudioContextRef = useRef<AudioContext | null>(null);
+  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null); // Added ref for cleanup
   const nextStartTimeRef = useRef<number>(0);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const sessionRef = useRef<any>(null);
@@ -32,6 +33,15 @@ const App: React.FC = () => {
   }, [messages, activeUserText, activeModelText]);
 
   const stopConversation = useCallback(() => {
+    // Stop input processor explicitly
+    if (scriptProcessorRef.current) {
+      try {
+        scriptProcessorRef.current.disconnect();
+        scriptProcessorRef.current.onaudioprocess = null;
+      } catch (e) {}
+      scriptProcessorRef.current = null;
+    }
+
     if (sessionRef.current) {
       try { sessionRef.current.close(); } catch (e) {}
       sessionRef.current = null;
@@ -51,7 +61,6 @@ const App: React.FC = () => {
     });
     sourcesRef.current.clear();
 
-    // CRITICAL FIX: Reset the audio scheduling clock for the next session
     nextStartTimeRef.current = 0;
     
     setStatus(ConnectionStatus.DISCONNECTED);
@@ -67,7 +76,12 @@ const App: React.FC = () => {
       setErrorMessage(null);
       setStatus(ConnectionStatus.CONNECTING);
       
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const apiKey = process.env.API_KEY;
+      if (!apiKey) {
+        throw new Error("API Kaliti topilmadi. .env faylini tekshiring.");
+      }
+
+      const ai = new GoogleGenAI({ apiKey: apiKey });
       
       const inCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       const outCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
@@ -101,11 +115,23 @@ const App: React.FC = () => {
             setStatus(ConnectionStatus.CONNECTED);
             const source = inCtx.createMediaStreamSource(stream);
             const scriptProcessor = inCtx.createScriptProcessor(4096, 1, 1);
+            scriptProcessorRef.current = scriptProcessor;
+
             scriptProcessor.onaudioprocess = (event) => {
+              // Guard: stop sending if session is closed
+              if (!sessionRef.current) return;
+
               const inputData = event.inputBuffer.getChannelData(0);
               const pcmBlob = createPcmBlob(inputData);
+              
               sessionPromise.then((session) => {
-                session.sendRealtimeInput({ media: pcmBlob });
+                // Double guard inside async
+                if (sessionRef.current !== session) return;
+                try {
+                  session.sendRealtimeInput({ media: pcmBlob });
+                } catch (e) {
+                  // Ignore errors to prevent console spam when closing
+                }
               });
             };
             source.connect(scriptProcessor);
@@ -176,8 +202,11 @@ const App: React.FC = () => {
           },
           onerror: (err) => {
             console.error(err);
-            setErrorMessage("Aloqa uzildi. Iltimos, qayta urinib ko'ring.");
-            setStatus(ConnectionStatus.ERROR);
+            // Don't show generic error if it's just a closing socket
+            if (status === ConnectionStatus.CONNECTED) {
+               setErrorMessage("Aloqa uzildi. Internet yoki API kalitni tekshiring.");
+               setStatus(ConnectionStatus.ERROR);
+            }
           },
           onclose: () => stopConversation()
         }
